@@ -59,13 +59,15 @@ After activation, your terminal prompt should begin with:
 
 Download the XPEEM Viewer repository from GitHub.
 
+https://github.com/ml-for-spectro/XPEEM-Viewer
+
 You can either download the repository as a ZIP file using:
 
 **Code → Download ZIP**
 
 or clone the repository using Git:
 
-    git clone <XPEEM-VIEWER-REPOSITORY-URL>
+    git clone https://github.com/ml-for-spectro/XPEEM-Viewer.git
 
 Then enter the XPEEM Viewer directory:
 
