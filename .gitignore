@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary and backup files
+*~
+*.bak
+*.tmp
+
+# Experimental/data files
+*.h5
+*.hdf5
+*.nxs
+*.tif
+*.tiff
+
+# Logs
+*.log
