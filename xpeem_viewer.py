@@ -40,11 +40,11 @@ from PIL import Image
 
 import numpy as np
 
-
+__version__ = "0.1.0"
 class HDF5Viewer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("XPEEM HDF5 Viewer")
+        self.setWindowTitle(f"XPEEM Viewer v{__version__}")
         self.setGeometry(80, 60, 1500, 900)
         self.setMinimumSize(1100, 700)
 
@@ -1808,7 +1808,7 @@ class HDF5Viewer(QMainWindow):
 
             with h5py.File(save_path, "w") as fout:
                 fout.attrs["NeXus_version"] = "4.3.0"
-                fout.attrs["creator"] = "XPEEM HDF5 Viewer"
+                fout.attrs["creator"] = f"XPEEM Viewer v{__version__}"
                 fout.attrs["file_name"] = save_path
                 fout.attrs["file_time"] = nx_time
                 fout.attrs["processed_stack"] = True
@@ -1862,7 +1862,7 @@ class HDF5Viewer(QMainWindow):
                 processing = entry.create_group("processing")
                 processing.attrs["NX_class"] = "NXprocess"
                 processing.create_dataset(
-                    "program", data=np.bytes_("XPEEM HDF5 Viewer")
+                    "program", data=np.bytes_(f"XPEEM Viewer v{__version__}")
                 )
                 processing.create_dataset(
                     "note",
