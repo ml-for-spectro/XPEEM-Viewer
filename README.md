@@ -2,7 +2,12 @@
 
 **XPEEM Viewer** is a Python-based graphical application for visualisation, processing, alignment, and analysis of X-ray PhotoEmission Electron Microscopy (XPEEM) image stacks.
 
-The software was developed for practical analysis of XPEEM datasets, with particular emphasis on spectromicroscopy, drift correction, and XMCD workflows.
+This software was developed for practical analysis of XPEEM datasets, with particular emphasis on spectromicroscopy, image drift correction, and X-ray magnetic circular dichroism (XMCD) workflows.
+
+The code was developed with substantial assistance from AI-based coding tools. Its functionality and scientific reliability have been checked to the best of my ability; however, comprehensive validation has not been performed.
+
+The software is provided "as is," without warranty of any kind. Users are encouraged to independently verify results before using them for scientific interpretation or publication.
+
 
 ---
 
