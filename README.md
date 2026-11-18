@@ -23,6 +23,28 @@ The software was developed for practical analysis of XPEEM datasets, with partic
 - Calculate and visualise XMCD contrast
 - Built-in processing and workflow help
 
+
+## What's new in v0.1.1
+
+### Brightness and contrast controls
+
+- Adjustable image brightness and contrast
+- Robust automatic scaling using intensity percentiles
+- Option to lock the display intensity range across frames
+- Reset function for display settings
+- Display adjustments do not modify the underlying scientific data
+- Controls remain available after image-stack normalization
+
+### Improved HDF5 saving and loading
+
+- Improved compatibility between HDF5 export and import
+- Reliable reloading of HDF5 files saved by XPEEM Viewer
+- Preservation of numerical precision during export
+- Improved handling of energy and frame axes
+- Support for normalized stacks containing NaN values
+- Verification of saved HDF5 data and associated axes
+
+These improvements were tested with representative datasets and synthetic test cases.
 ---
 
 ## Intended use
@@ -271,9 +293,9 @@ If you use the software for scientific work, please acknowledge XPEEM Viewer and
 ---
 
 ## License
+XPEEM Viewer is distributed under the BSD 3-Clause License.
 
-A software license will be specified before the first public release.
-
+See [LICENSE](LICENSE) for the complete license terms.
 ---
 
 ## Author

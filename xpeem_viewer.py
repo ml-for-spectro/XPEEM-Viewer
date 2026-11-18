@@ -40,7 +40,10 @@ from PIL import Image
 
 import numpy as np
 
-__version__ = "0.1.0"
+
+__version__ = "0.1.1"
+
+
 class HDF5Viewer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -89,7 +92,7 @@ class HDF5Viewer(QMainWindow):
         self.sum_stack_button.setEnabled(False)
         file_layout.addWidget(self.sum_stack_button, 1, 1)
 
-        self.save_axis_button = QPushButton("Save as Axis HDF5")
+        self.save_axis_button = QPushButton("Save NXdata HDF5")
         self.save_axis_button.clicked.connect(self.save_for_axis)
         self.save_axis_button.setEnabled(False)
         file_layout.addWidget(self.save_axis_button, 2, 0)
@@ -229,6 +232,28 @@ class HDF5Viewer(QMainWindow):
         self.slider_layout.addWidget(self.y_slider, 2, 1)
 
         self.layout.addLayout(self.slider_layout)
+        display = QHBoxLayout()
+        self.brightness_slider = QSlider(Qt.Horizontal)
+        self.brightness_slider.setRange(-100, 100)
+        self.contrast_slider = QSlider(Qt.Horizontal)
+        self.contrast_slider.setRange(-100, 100)
+        self.display_auto = QCheckBox("Robust auto (1–99%)")
+        self.display_auto.setChecked(True)
+        self.display_lock = QCheckBox("Lock display range")
+        self._display_range = None
+        self._display_artist = None
+        reset = QPushButton("Reset display")
+        reset.clicked.connect(self._reset_display)
+        for label, slider in (("Brightness", self.brightness_slider), ("Contrast", self.contrast_slider)):
+            display.addWidget(QLabel(label))
+            display.addWidget(slider, 1)
+            slider.valueChanged.connect(self._apply_display)
+        display.addWidget(self.display_auto)
+        display.addWidget(self.display_lock)
+        display.addWidget(reset)
+        self.display_auto.toggled.connect(self._display_mode_changed)
+        self.display_lock.toggled.connect(self._display_mode_changed)
+        self.layout.addLayout(display)
 
         # --- Other initializations ---
         self.crop_mode = False
@@ -272,6 +297,22 @@ class HDF5Viewer(QMainWindow):
 
     def _discover_hdf5_stack(self, h5file):
         """Discover the most plausible 3-D image stack and a matching 1-D axis."""
+        if "entry1/xpeem/data" in h5file:
+            group = h5file["entry1/xpeem"]
+            ds = group["data"]
+            if ds.ndim != 3 or not np.issubdtype(ds.dtype, np.number):
+                raise ValueError("Invalid XPEEM image stack.")
+            data = ds[()]
+            axis_name = "frame" if "frame" in group else "energy"
+            if axis_name in group:
+                axis = np.asarray(group[axis_name][()]).reshape(-1)
+                if axis.size != data.shape[0]:
+                    raise ValueError("Saved XPEEM axis length does not match the stack.")
+                is_energy = bool(group.attrs.get("axis_is_energy", axis_name == "energy"))
+            else:
+                axis = np.arange(data.shape[0], dtype=float)
+                is_energy = False
+            return data, axis, ds.name, group[axis_name].name if axis_name in group else "Frame number", is_energy
         datasets = []
         def visitor(name, obj):
             if isinstance(obj, h5py.Dataset):
@@ -502,9 +543,14 @@ class HDF5Viewer(QMainWindow):
         generic TIFF normally contains no photon-energy metadata, its first axis is shown
         as <b>Frame number</b>, not energy.</p>
 
+        <h2>Display brightness and contrast</h2>
+        <p>Brightness and contrast change only the displayed grayscale limits, not the data.
+        Robust auto uses the finite 1st–99th percentiles; disable it for full-range scaling.
+        Lock display range keeps the base limits fixed across frames. Reset display restores
+        neutral sliders. Loading or normalizing a stack refreshes the base limits.</p>
         <h2>8. Saving processed data</h2>
         <p><b>Save Processed Stack (HDF5)</b> is the preferred HDF5 export after operations
-        such as drift correction or normalization because it preserves floating-point data
+        such as drift correction or normalization because it preserves native numeric precision and floating-point data
         and NaN values. <b>Save Current TIFF</b> saves the currently displayed image, while
         <b>Sum Stack → TIFF</b> sums all frames of the current processed stack.</p>
 
@@ -522,6 +568,19 @@ class HDF5Viewer(QMainWindow):
         buttons.clicked.connect(dialog.accept)
         layout.addWidget(buttons)
         dialog.exec()
+
+    def _reset_loaded_state(self):
+        self._display_range = None
+        self.drift_algorithm = None
+        self.drift_details = {}
+        self.i0_spectrum = None
+        self.i0_vertices = None
+        self.i0_normalization_mode = None
+        self.last_normalized_image = None
+        self.xmcd_image = None
+        self.aligned_cl_cr_stack = None
+        self.cl_cr_shift = None
+        self._clear_polygon_roi()
 
     def load_tiff(self):
         """Load a single TIFF image or a multi-page TIFF stack."""
@@ -562,6 +621,9 @@ class HDF5Viewer(QMainWindow):
             self.axis_is_energy = False
             self.slice_type = "energy"
             self.current_file = file_path
+            self.filename = file_path
+            self.original_data = self.data.copy()
+            self._reset_loaded_state()
             self.last_directory = os.path.dirname(file_path)
             self.settings.setValue("last_directory", self.last_directory)
 
@@ -656,6 +718,7 @@ class HDF5Viewer(QMainWindow):
             # Keep the complete XPEEM detector image.
             # No automatic circular field-of-view mask is applied on loading.
 
+            self._reset_loaded_state()
             self.original_data = self.data.copy()
             self.pre_drift_data = None
             self.drift_shifts = None
@@ -1333,12 +1396,50 @@ class HDF5Viewer(QMainWindow):
                     f.write(f"{x:.6g}, {intensity:.6f}\n")
             self.metadata_label.setText(f"Spectrum saved to {file_path}")
 
+    def _display_mode_changed(self, *_):
+        self._display_range = None
+        self._apply_display()
+
+    def _reset_display(self, *_):
+        self._display_range = None
+        for slider in (self.brightness_slider, self.contrast_slider):
+            slider.blockSignals(True)
+            slider.setValue(0)
+            slider.blockSignals(False)
+        self._apply_display()
+
+    def _apply_display(self, *_):
+        artist = self._display_artist
+        if artist is None or artist not in self.ax_image.images:
+            return
+        if self._display_range is None or not self.display_lock.isChecked():
+            values = np.ma.asarray(artist.get_array()).compressed()
+            values = values[np.isfinite(values)]
+            if values.size:
+                lo, hi = (np.percentile(values, [1, 99]) if self.display_auto.isChecked()
+                          else (values.min(), values.max()))
+                if hi <= lo:
+                    lo, hi = float(lo) - 0.5, float(hi) + 0.5
+            else:
+                lo, hi = 0., 1.
+            self._display_range = float(lo), float(hi)
+        lo, hi = self._display_range
+        span = hi - lo
+        center = (lo + hi) / 2 - self.brightness_slider.value() * span / 100
+        half = span / (2 * 10 ** (self.contrast_slider.value() / 100))
+        artist.set_clim(center - half, center + half)
+        self.canvas.draw_idle()
+
+    def _show_stack_image(self, array):
+        self._display_artist = self.ax_image.imshow(array, cmap="gray", origin="lower")
+        self._apply_display()
+
     def update_image(self):
         idx = self.energy_slider.value()
         if self.data is not None:
             self.slice_type = "energy"
             self.ax_image.clear()
-            self.ax_image.imshow(self.data[idx, :, :], cmap="gray", origin="lower")
+            self._show_stack_image(self.data[idx, :, :])
             if self.axis_is_energy:
                 self.ax_image.set_title(f"Frame #{idx} — {self.energy[idx]:.2f} eV")
             else:
@@ -1353,7 +1454,7 @@ class HDF5Viewer(QMainWindow):
         if self.data is not None:
             self.slice_type = "x"
             self.ax_image.clear()
-            self.ax_image.imshow(self.data[:, idx, :], cmap="gray", origin="lower")
+            self._show_stack_image(self.data[:, idx, :])
             self.ax_image.set_title(f"X cross-section @ x={idx}")
             self.canvas.draw()
 
@@ -1365,7 +1466,7 @@ class HDF5Viewer(QMainWindow):
         if self.data is not None:
             self.slice_type = "y"
             self.ax_image.clear()
-            self.ax_image.imshow(self.data[:, :, idx], cmap="gray", origin="lower")
+            self._show_stack_image(self.data[:, :, idx])
             self.ax_image.set_title(f"Y cross-section @ y={idx}")
             self.canvas.draw()
 
@@ -1613,6 +1714,7 @@ class HDF5Viewer(QMainWindow):
             self.i0_normalization_mode = "OD=-ln(I/I0)"
             mode_text = "Optical Density −ln(I/I₀)"
 
+        self._display_range = None
         self.update_image()
         self.metadata_label.setText(
             f"I₀ normalization applied: {mode_text}. "
@@ -1758,7 +1860,7 @@ class HDF5Viewer(QMainWindow):
     def save_processed_stack_hdf5(self):
         """Save the current working stack losslessly for reloading in this GUI.
 
-        Data are stored as float32 so subpixel interpolation and NaN borders from
+        Data retain their native dtype so subpixel interpolation and NaN borders from
         drift correction are preserved.  The energy axis and, when available,
         drift-shift metadata are saved alongside the stack.
         """
@@ -1768,7 +1870,7 @@ class HDF5Viewer(QMainWindow):
             )
             return
 
-        stack = np.asarray(self.data, dtype=np.float32)
+        stack = np.asarray(self.data)
         if stack.ndim != 3:
             QMessageBox.warning(
                 self,
@@ -1782,6 +1884,8 @@ class HDF5Viewer(QMainWindow):
         else:
             energy = np.arange(stack.shape[0], dtype=np.float64)
 
+        is_energy = bool(self.axis_is_energy and self.energy is not None and len(self.energy) == stack.shape[0])
+        axis_name = "energy" if is_energy else "frame"
         if getattr(self, "filename", None):
             stem = Path(self.filename).stem
             default_name = f"{stem}_processed.hdf5"
@@ -1800,6 +1904,9 @@ class HDF5Viewer(QMainWindow):
         if not save_path.lower().endswith((".hdf5", ".h5")):
             save_path += ".hdf5"
 
+        if getattr(self, "filename", None) and Path(save_path).resolve() == Path(self.filename).resolve():
+            QMessageBox.warning(self, "Choose another file", "Do not overwrite the loaded source file.")
+            return
         try:
             ny, nx = stack.shape[1], stack.shape[2]
             sample_x = np.arange(nx, dtype=np.float64)
@@ -1823,24 +1930,28 @@ class HDF5Viewer(QMainWindow):
                 xpeem = entry.create_group("xpeem")
                 xpeem.attrs["NX_class"] = "NXdata"
                 xpeem.attrs["signal"] = "data"
-                xpeem.attrs["axes"] = np.array(
-                    [b"energy", b"sample_y", b"sample_x"]
-                )
+                xpeem.attrs["axes"] = np.array([axis_name.encode(), b"sample_y", b"sample_x"])
+                xpeem.attrs["axis_is_energy"] = is_energy
+                xpeem.attrs[f"{axis_name}_indices"] = 0
+                xpeem.attrs["sample_y_indices"] = 1
+                xpeem.attrs["sample_x_indices"] = 2
+                fout.attrs["default"] = "entry1"
+                entry.attrs["default"] = "xpeem"
 
                 dset = xpeem.create_dataset(
                     "data",
                     data=stack,
-                    dtype=np.float32,
+                    dtype=stack.dtype,
                     compression="gzip",
                     compression_opts=4,
                     shuffle=True,
                 )
                 dset.attrs["long_name"] = "Processed XPEEM image stack"
-                dset.attrs["dimension_order"] = "energy,y,x"
+                dset.attrs["dimension_order"] = f"{axis_name},y,x"
                 dset.attrs["preserves_nan"] = True
 
-                e = xpeem.create_dataset("energy", data=energy)
-                e.attrs["units"] = "eV"
+                e = xpeem.create_dataset(axis_name, data=energy)
+                e.attrs["units"] = "eV" if is_energy else "1"
                 e.attrs["axis"] = 0
 
                 sy = xpeem.create_dataset("sample_y", data=sample_y)
@@ -1867,7 +1978,7 @@ class HDF5Viewer(QMainWindow):
                 processing.create_dataset(
                     "note",
                     data=np.bytes_(
-                        "Current GUI working stack saved as float32; "
+                        "Current GUI working stack saved in its native dtype; "
                         "NaNs and subpixel-interpolated values are preserved."
                     ),
                 )
@@ -1910,17 +2021,26 @@ class HDF5Viewer(QMainWindow):
                         for key, value in self.drift_details.items():
                             processing.attrs[f"drift_{key}"] = value
 
+            with h5py.File(save_path, "r") as check:
+                saved = check["entry1/xpeem/data"]
+                if saved.shape != stack.shape or saved.dtype != stack.dtype:
+                    raise ValueError("Saved stack shape or dtype does not match.")
+                for i in range(stack.shape[0]):
+                    if not np.array_equal(saved[i], stack[i], equal_nan=True):
+                        raise ValueError(f"Saved frame {i} differs from working data.")
+                if not np.array_equal(check[f"entry1/xpeem/{axis_name}"][()], energy, equal_nan=True):
+                    raise ValueError("Saved axis differs from working axis.")
             self.last_directory = os.path.dirname(save_path)
             self.settings.setValue("last_directory", self.last_directory)
             self.metadata_label.setText(
                 f"Processed stack saved:\n{save_path}\n"
-                f"Shape: {stack.shape}; dtype: float32\n"
+                f"Shape: {stack.shape}; dtype: {stack.dtype}\n"
                 "This file can be loaded back with Load HDF5 / NXS."
             )
             QMessageBox.information(
                 self,
                 "Processed stack saved",
-                "The current stack was saved as float32 HDF5.\n\n"
+                "The current stack was saved as HDF5 in its native dtype.\n\n"
                 "Subpixel values and NaN borders are preserved, and the file "
                 "can be loaded back into this GUI.",
             )
@@ -1933,87 +2053,8 @@ class HDF5Viewer(QMainWindow):
             )
 
     def save_for_axis(self):
-
-        if self.filename:
-
-            nxsFile = h5py.File(self.filename, "r")
-            theEntry = list(nxsFile.keys())[0]
-            if self.data is None:
-                theData = nxsFile[theEntry]["scan_data"]["data_02"][()]
-            else:
-                theData = self.data
-
-            try:
-                energy = nxsFile[theEntry]["scan_data"]["actuator_1_1"][()]
-            except:
-                energy = np.zeros(len(theData))
-
-            sampleX = np.linspace(0, np.shape(theData)[1] - 1, np.shape(theData)[1])
-            sampleY = np.linspace(0, np.shape(theData)[2] - 1, np.shape(theData)[2])
-
-            # hdfOutFileName = nxsFileName.split(".")[0] + "_axis.hdf5"
-            savefilename, _ = QFileDialog.getSaveFileName(
-                self, "Save axis readable HDF5 File", "", "HDF5 Files (*.hdf5)"
-            )
-            if savefilename:
-                with h5py.File(savefilename, "w") as NXfout:
-                    NXfout.attrs["HDF5_Version"] = np.array([b"1.8.4"])
-                    NXfout.attrs["NeXus_version"] = np.array([b"4.3.0"])
-                    NXfout.attrs["file_name"] = np.array([savefilename.encode("utf-8")])
-                    NXtime = time.strftime("%Y-%m-%dT%H:%M:%S+01:00")
-                    NXfout.attrs["file_time"] = np.array([NXtime.encode("utf-8")])
-                    NXfout.create_group(b"entry1")
-                    NXfout["entry1"].create_dataset(
-                        "start_time", data=np.array([NXtime.encode("utf-8")])
-                    )
-                    NXfout["entry1"].create_dataset(
-                        "end_time", data=np.array([NXtime.encode("utf-8")])
-                    )
-                    NXfout["entry1"].attrs["NX_class"] = b"NXentry"
-                    NXfout["entry1"].create_dataset(
-                        "definition", data=np.array([b"NXstxm"])
-                    )
-                    NXfout["entry1"]["definition"].attrs["version"] = np.array(b"1.1")
-                    NXfout["entry1"].create_group(b"xpeem")
-                    NXfout["entry1"]["xpeem"].attrs["NX_class"] = b"NXdata"
-                    NXfout["entry1"]["xpeem"].create_dataset(
-                        b"data", np.shape(theData), dtype="uint16", data=theData
-                    )
-                    NXfout["entry1"]["xpeem"].attrs["signal"] = "data"
-                    NXfout["entry1"]["xpeem"].attrs["axes"] = [
-                        "energy",
-                        "sample_x",
-                        "sample_y",
-                    ]
-                    NXfout["entry1"]["xpeem"].attrs["sample_y_indices"] = np.array(
-                        [0], dtype="uint32"
-                    )
-                    NXfout["entry1"]["xpeem"].create_dataset(
-                        b"sample_y",
-                        (np.shape(theData)[2],),
-                        dtype="float",
-                        data=sampleY,
-                    )
-                    NXfout["entry1"]["xpeem"].attrs["sample_x_indices"] = np.array(
-                        [1], dtype="uint32"
-                    )
-                    NXfout["entry1"]["xpeem"].create_dataset(
-                        b"sample_x",
-                        (np.shape(theData)[1],),
-                        dtype="float",
-                        data=sampleX,
-                    )
-                    NXfout["entry1"]["xpeem"].create_dataset(b"energy", data=energy)
-                    NXfout["entry1"]["xpeem"].create_dataset(
-                        "stxm_scan_type", data=np.array([b"sample image"])
-                    )
-                    NXfout["entry1"]["xpeem"]["sample_x"].attrs["axis"] = 2
-                    NXfout["entry1"]["xpeem"]["sample_y"].attrs["axis"] = 1
-                    NXfout["entry1"]["xpeem"]["energy"].attrs["units"] = "eV"
-                    NXfout["entry1"]["xpeem"].create_dataset(
-                        b"count_time", data=np.linspace(0.1, 0.1, np.shape(theData)[0])
-                    )
-                    NXfout["entry1"].create_dataset("title", data=[b"XPEEM data"])
+        """Use the same precision-preserving NXdata layout for both exports."""
+        self.save_processed_stack_hdf5()
 
     def apply_crop(self):
         if self.crop_rect and self.data is not None:
@@ -2067,6 +2108,7 @@ class HDF5Viewer(QMainWindow):
                 "Normalization applied to all slices. "
                 "Use 'Save TIFF Image' to export the displayed normalized slice."
             )
+            self._display_range = None
             self.update_image()  # Refresh image view
 
         except Exception as e:
