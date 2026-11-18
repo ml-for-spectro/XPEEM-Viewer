@@ -8,6 +8,8 @@ The code was developed with substantial assistance from AI-based coding tools. I
 
 The software is provided "as is," without warranty of any kind. Users are encouraged to independently verify results before using them for scientific interpretation or publication.
 
+In case you find this tool useful, share the tool with colleague and acknowledge in publications. Any feedback is welcome.
+
 
 ---
 
